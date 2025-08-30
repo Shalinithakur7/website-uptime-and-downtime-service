@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Uptime Monitor</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for beautiful charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Day.js for easy date formatting -->
+    <script src="https://cdn.jsdelivr.net/npm/dayjs"></script>
+    <!-- Chart.js adapter for Day.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-adapter-dayjs/1.1.2/chartjs-adapter-dayjs.min.js"></script>
+    <style>
+        /* A little custom CSS for our dark theme and status dots */
+        body { background-color: #111827; color: #e5e7eb; font-family: 'Inter', sans-serif; }
+        .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; }
+        .status-up { background-color: #22c55e; box-shadow: 0 0 8px #22c55e; }
+        .status-down { background-color: #ef4444; box-shadow: 0 0 8px #ef4444; }
+        .status-pending { background-color: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+        .card { background-color: #1f2937; border: 1px solid #374151; }
+        .modal-bg { background-color: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
+    </style>
+</head>
+<body class="antialiased">
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-4xl font-bold text-white tracking-tight">Uptime Monitor 🛰️</h1>
+            <a href="{{ url_for('add_url') }}" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition-colors shadow-lg">
+                + Add New Site
+            </a>
+        </header>
+
+        <main id="url-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- This is a Jinja2 loop that Flask uses to render each site -->
+            {% for url in monitored_urls %}
+            <div class="card p-6 rounded-xl shadow-lg hover:shadow-purple-500/20 hover:-translate-y-1 transition-all">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="flex items-center gap-3">
+                            <span class="status-dot status-{{ url.status }}"></span>
+                            <h2 class="text-xl font-semibold text-white">{{ url.name }}</h2>
+                        </div>
+                        <a href="{{ url.url }}" target="_blank" class="text-sm text-gray-400 hover:text-purple-400 break-all">{{ url.url }}</a>
+                    </div>
+                    <!-- Delete Button Form -->
+                    <form action="{{ url_for('delete_url', url_id=url.id) }}" method="post">
+                         <button type="submit" class="text-gray-500 hover:text-red-500 transition-colors text-2xl font-bold">&times;</button>
+                    </form>
+                </div>
+                <div class="mt-4 text-sm text-gray-400">
+                     <p><strong>Monitoring From:</strong> US & Europe (via GitHub)</p>
+                     <p><strong>Last Checked:</strong> {{ url.last_checked or 'Never' }}</p>
+                </div>
+                 <div class="mt-4">
+                    <button onclick="showHistoryModal({{ url.id }})" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors text-sm">
+                        View History
+                    </button>
+                </div>
+            </div>
+            {% else %}
+            <!-- This shows if there are no sites to monitor yet -->
+            <div class="col-span-full card text-center p-12 rounded-xl">
+                <h3 class="text-xl font-medium">No sites are being monitored yet.</h3>
+                <p class="text-gray-400 mt-2">Click "Add New Site" to get started!</p>
+            </div>
+            {% endfor %}
+        </main>
+    </div>
+
+    <!-- History Modal (Hidden by default) -->
+    <div id="history-modal" class="fixed inset-0 modal-bg items-center justify-center hidden z-50 p-4">
+        <div class="card rounded-xl shadow-2xl w-full max-w-4xl m-4">
+            <div class="p-6 border-b border-gray-700 flex justify-between items-center">
+                <div>
+                    <h3 id="modal-title" class="text-xl font-bold">Uptime History</h3>
+                    <a id="modal-url" href="#" target="_blank" class="text-sm text-purple-400"></a>
+                </div>
+                <button onclick="closeHistoryModal()" class="text-gray-400 hover:text-white text-3xl font-bold">&times;</button>
+            </div>
+            <div class="p-6">
+                <!-- The chart will be drawn here -->
+                <canvas id="uptime-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let uptimeChart = null;
+
+        // This function is called when you click "View History"
+        async function showHistoryModal(urlId) {
+            document.getElementById('history-modal').classList.remove('hidden');
+            document.getElementById('history-modal').classList.add('flex');
+            
+            // Fetch the historical data from our Flask API
+            const response = await fetch(`/history/${urlId}`);
+            const data = await response.json();
+
+            document.getElementById('modal-title').innerText = `History for ${data.name}`;
+            const modalUrlEl = document.getElementById('modal-url');
+            modalUrlEl.href = data.url;
+            modalUrlEl.innerText = data.url;
+
+            // Logic to create separate datasets for each location
+            const locations = [...new Set(data.checks.map(c => c.location))];
+            const datasets = locations.map(location => {
+                const checksForLocation = data.checks.filter(c => c.location === location);
+                const isUbuntu = location.includes('ubuntu');
+                return {
+                    label: `Response Time - ${isUbuntu ? '🇺🇸 USA' : '🇪🇺 Europe'}`,
+                    data: checksForLocation.map(c => ({ 
+                        x: dayjs(c.checked_at).valueOf(), 
+                        // Show response time only if site was up, otherwise show a null gap in the line
+                        y: c.is_up ? c.response_time : null 
+                    })),
+                    borderColor: isUbuntu ? 'rgba(168, 85, 247, 0.8)' : 'rgba(59, 130, 246, 0.8)',
+                    pointBackgroundColor: checksForLocation.map(c => c.is_up ? (isUbuntu ? 'rgba(168, 85, 247, 1)' : 'rgba(59, 130, 246, 1)') : 'rgba(239, 68, 68, 1)'),
+                    tension: 0.3,
+                    pointRadius: 5
+                };
+            });
+
+            const ctx = document.getElementById('uptime-chart').getContext('2d');
+            if (uptimeChart) {
+                uptimeChart.destroy(); // Clear old chart before drawing a new one
+            }
+            uptimeChart = new Chart(ctx, {
+                type: 'line',
+                data: { datasets: datasets },
+                options: {
+                    scales: {
+                        x: { type: 'time', time: { unit: 'minute' }, title: { display: true, text: 'Time of Check' } },
+                        y: { beginAtZero: true, title: { display: true, text: 'Response Time (ms)' } }
+                    }
+                }
+            });
+        }
+
+        function closeHistoryModal() {
+            document.getElementById('history-modal').classList.add('hidden');
+            document.getElementById('history-modal').classList.remove('flex');
+        }
+    </script>
+</body>
+</html>
+
